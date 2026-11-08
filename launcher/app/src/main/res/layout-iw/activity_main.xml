@@ -302,8 +302,8 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginEnd="6dp"
-                            android:format12Hour="h:mm"
-                            android:format24Hour="HH:mm"
+                            android:format12Hour="h:mm:ss"
+                            android:format24Hour="HH:mm:ss"
                             android:textColor="#FFFFFFFF"
                             android:textSize="52sp"
                             android:fontFamily="@string/font_light"
@@ -396,12 +396,14 @@
             </LinearLayout>
         </RelativeLayout>
 
-        <!-- The wrapper clips at the grid's edge; the grid itself must not clip so scaled tiles can overflow their cells. -->
+        <!-- The wrapper clips at the grid's edge; the grid itself must not clip so scaled tiles can overflow their cells.
+             Hikmah sits in the grid's top padding and translates with the scroll, so it is not sticky. -->
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
-            android:layout_marginTop="10dp">
+            android:layout_marginTop="10dp"
+            android:clipChildren="true">
 
             <androidx.recyclerview.widget.RecyclerView
                 android:id="@+id/grid"
@@ -416,6 +418,8 @@
                 android:overScrollMode="never"
                 android:scrollbars="none"
                 android:descendantFocusability="afterDescendants" />
+
+            <include layout="@layout/hikmah_shelf" />
         </FrameLayout>
     </LinearLayout>
 

@@ -58,6 +58,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.SoundEffectConstants;
 import android.view.ViewGroup;
+import android.view.ViewOutlineProvider;
 import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.animation.AnimationUtils;
@@ -195,6 +196,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private TextView raceKicker, raceHeadline, raceSessions;
     /** game_day: each team's next game from an add-on, rotating in the race panel; null when the key is off. */
     private GameDay gameDay;
+    /** Daily Hikmah strip above the apps (Quran, Hadith, 99 Names, Quote). */
+    private HikmahShelf hikmah;
     private View raceBar;
     private LinearLayout racePager;
     private long rotationStart;
@@ -405,6 +408,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         @Override
         public void onReceive(Context context, Intent intent) {
             updateClockVisibility();
+            if (hikmah != null) hikmah.onMinute();
         }
     };
     private final Runnable minuteTick = new Runnable() {
@@ -415,6 +419,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             // The pill follows the network callbacks and each return to Home; only the festive light follows the
             // signal level, so only it needs this minute's binder calls (about 7 ms on the UI thread).
             if (festive) updateWifiLabel();
+            if (hikmah != null) hikmah.onMinute();
             sky.update();
             wallpaperPlayer.update();
             handler.postDelayed(this, MINUTE_MS);
@@ -538,6 +543,14 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         raceBar = findViewById(R.id.raceBar);
         racePager = findViewById(R.id.racePager);
         gameDay = GameDay.create(this, cfg.gameDay, handler, this::updatePanel);
+        hikmah = new HikmahShelf(findViewById(R.id.hikmah), handler, new HikmahShelf.Host() {
+            @Override public void onLeaveToApps() {
+                focusTile(singleRow ? lastFocused : lastFocused % COLUMNS);
+            }
+            @Override public void onLeaveToTopBar() {
+                firstTopButton().requestFocus();
+            }
+        });
         // The rotation runs on the clock that never jumps: setting the TV's time must not stall or stretch a turn.
         rotationStart = SystemClock.elapsedRealtime();
         showStats = cfg.showStats;
@@ -654,26 +667,30 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         // tvOS layout: push the dock row towards the bottom of the screen, leaving room for
         // rows_below_dock grid rows under it; the rest of the grid stays below until you press Down.
         int rowsBelowDock = cfg.rowsBelowDock;
-        grid.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
-            int h = b - t;
+        boolean dockTitle = cfg.dockTitle;
+        boolean alwaysShowNames = cfg.alwaysShowNames;
+        Runnable fitGridTopPadding = () -> {
+            int h = grid.getHeight();
+            int w = grid.getWidth();
+            if (h <= 0 || w <= 0) return;
             // Item height follows the tile size, which follows the columns and the rows that must fit (AppAdapter.tileWidthPx).
-            int inner = (r - l) - grid.getPaddingLeft() - grid.getPaddingRight();
-            int tileW = AppAdapter.tileWidthPx(inner, h, COLUMNS, rowsBelowDock, cfg.dockTitle, cfg.dockRow, density);
+            int inner = w - grid.getPaddingLeft() - grid.getPaddingRight();
+            int tileW = AppAdapter.tileWidthPx(inner, h, COLUMNS, rowsBelowDock, dockTitle, dockRow, density);
             int itemH = AppAdapter.itemHeightPx(AppAdapter.tileHeightPx(tileW), density);
-            int dockRow = itemH + (int) (AppAdapter.DOCK_EXTRA_DP * density);   // item height plus DockDecoration offsets
+            int dockBand = itemH + (int) (AppAdapter.DOCK_EXTRA_DP * density);   // item height plus DockDecoration offsets
             int gridRows = itemH * rowsBelowDock;
             // Keep the hero below the header when the library is enabled on a short screen,
             // even when the theme requests an extra visible row below the dock.
-            int shelfClearance = cfg.appLibrary ? hero.getMeasuredHeight() + (int) (40 * density) : 0;
-            int want = Math.max(shelfClearance, h - dockRow - gridRows - (int) (AppAdapter.BOTTOM_ROOM_DP * density));
+            int shelfClearance = appLibraryEnabled ? hero.getMeasuredHeight() + (int) (40 * density) : 0;
+            int want = Math.max(shelfClearance, h - dockBand - gridRows - (int) (AppAdapter.BOTTOM_ROOM_DP * density));
             // Where the rows cannot fit even at the smallest tile (3 rows with the title on), the title keeps its
             // room above the dock and the last rows run off the bottom instead of the title drawing over the clock.
-            if (MainActivity.this.dockRow && cfg.dockTitle && rowsBelowDock > 0) want = Math.max(want, (int) (AppAdapter.TITLE_ROOM_DP * density));
+            if (dockRow && dockTitle && rowsBelowDock > 0) want = Math.max(want, (int) (AppAdapter.TITLE_ROOM_DP * density));
             // No dock to push down: the grid starts at the top, with room for the first row's zoom and glass.
-            if (!MainActivity.this.dockRow) want = (int) (AppAdapter.TOP_ROOM_DP * density);
+            if (!dockRow) want = (int) (AppAdapter.TOP_ROOM_DP * density);
             // A single row never shows the names under its tiles (the title above the row names the app), so the
             // 7dp gap and 22dp label item_app.xml keeps for them would only lift the row: sit it that much lower.
-            if (singleRow && !cfg.alwaysShowNames) want += (int) (29 * density);
+            if (singleRow && !alwaysShowNames) want += (int) (29 * density);
             if (grid.getPaddingTop() != want) {
                 grid.setPadding(grid.getPaddingLeft(), want, grid.getPaddingRight(), grid.getPaddingBottom());
                 // A vertical grid parks the dock on the new padding line by scrolling (onTileFocused); a sideways
@@ -697,6 +714,42 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             // Cold start or column count > 4: the first focus can run before the grid has its final width or
             // padding, leaving the glass at the XML design size until a key is pressed.
             grid.post(this::refitGlass);
+        };
+        grid.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> fitGridTopPadding.run());
+        // First app row keeps a decoration gap the shelf sits in, so that gap scrolls away with the tiles
+        // instead of being sticky padding.
+        grid.addItemDecoration(new RecyclerView.ItemDecoration() {
+            @Override
+            public void getItemOffsets(@NonNull Rect outRect, @NonNull View view,
+                                       @NonNull RecyclerView parent, @NonNull RecyclerView.State state) {
+                if (dockRow || singleRow) return;
+                int pos = parent.getChildAdapterPosition(view);
+                if (pos >= 0 && pos < COLUMNS) outRect.top = hikmahReserve();
+            }
+        });
+        ViewGroup hikmahHost = (ViewGroup) hikmah.root().getParent();
+        hikmahHost.setClipChildren(true);
+        hikmahHost.setClipToPadding(true);
+        hikmahHost.setOutlineProvider(ViewOutlineProvider.BOUNDS);
+        hikmahHost.setClipToOutline(true);
+        hikmah.root().addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (b - t == ob - ot) return;
+            grid.invalidateItemDecorations();
+            // Only park on first appearance. A later height change is a card rotate, not a Home reset.
+            if (ob - ot == 0) {
+                grid.post(() -> {
+                    parkGridAtTop();
+                    syncHikmahScroll();
+                });
+            }
+        });
+
+        // Hikmah lives in the grid FrameLayout's top padding and must follow the same offset as the tiles.
+        grid.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
+                syncHikmahScroll();
+            }
         });
 
         // Keep the glass glued to its tile while the grid scrolls.
@@ -852,6 +905,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
             if (keyCode == KeyEvent.KEYCODE_DPAD_UP) return true;
             if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                if (hikmah != null && hikmah.focus()) {
+                    revealHikmah();
+                    v.playSoundEffect(SoundEffectConstants.NAVIGATION_DOWN);
+                    return true;
+                }
                 // Back to the dock tile Up came from, not wherever the focus finder lands.
                 focusTile(singleRow ? lastFocused : lastFocused % COLUMNS);
                 return true;
@@ -891,6 +949,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         packageFilter.addAction(Intent.ACTION_PACKAGE_CHANGED);
         packageFilter.addDataScheme("package");
         timeFilter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
+        timeFilter.addAction(Intent.ACTION_DATE_CHANGED);
         // Registered for the activity's whole life, not only while it is started: an app installed or updated while
         // another app is in front must still mark the tiles stale, or Home would have to rebuild on every return.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -982,7 +1041,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (openInputsIfAsked(intent)) return;
         if (intent == null || !intent.hasCategory(Intent.CATEGORY_HOME)) return;
         if (gameDay != null && !stopped) gameDay.read();
-        grid.scrollToPosition(0);
+        parkGridAtTop();
         lastFocused = 0;
         lastFocusedKey = adapter.getItemCount() > 0 ? adapter.keyAt(0) : null;
         if (stopped) {
@@ -1056,6 +1115,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
         if (showStats) startStats();
         if (gameDay != null) gameDay.start();
+        if (hikmah != null) hikmah.start();
         sky.update();
         wallpaperPlayer.start();
         handler.postDelayed(minuteTick, MINUTE_MS);
@@ -1237,6 +1297,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         startPending = null;   // leaving Home before the network came back: the boot's app stays closed
         stopStats();
         if (gameDay != null) gameDay.stop();
+        if (hikmah != null) hikmah.stop();
         handler.removeCallbacks(turnTick);
         if (lamp != null) lamp.stop();
         cancelPendingFocusScroll();
@@ -1292,6 +1353,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     protected void onDestroy() {
         super.onDestroy();
         if (gameDay != null) gameDay.shutdown();
+        if (hikmah != null) hikmah.shutdown();
         unregisterReceiver(packageReceiver);
         wallpaperPlayer.close();
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
@@ -2320,14 +2382,65 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     // ---- navigation ------------------------------------------------------------------------------
 
+    /** Put app row 0 on the padding line. {@code scrollToPosition(0)} is a no-op while that row sits in the padding. */
+    private void parkGridAtTop() {
+        if (singleRow) {
+            grid.scrollToPosition(0);
+            return;
+        }
+        RecyclerView.LayoutManager lm = grid.getLayoutManager();
+        if (lm instanceof GridLayoutManager) {
+            ((GridLayoutManager) lm).scrollToPositionWithOffset(0, 0);
+        } else {
+            grid.scrollToPosition(0);
+        }
+        grid.post(this::syncHikmahScroll);
+    }
+
+    /** Extra top padding so the first app row sits below the Hikmah panel instead of under it. */
+    private int hikmahReserve() {
+        View panel = hikmah == null ? null : hikmah.root();
+        if (panel == null || panel.getVisibility() != View.VISIBLE) return 0;
+        int hh = panel.getHeight() > 0 ? panel.getHeight() : panel.getMeasuredHeight();
+        if (hh <= 0) return 0;
+        int extra = 0;
+        ViewGroup.LayoutParams lp = panel.getLayoutParams();
+        if (lp instanceof ViewGroup.MarginLayoutParams) {
+            ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) lp;
+            extra = mlp.topMargin + mlp.bottomMargin;
+        }
+        return hh + extra;
+    }
+
+    private void syncHikmahScroll() {
+        View panel = hikmah == null ? null : hikmah.root();
+        if (panel == null || panel.getVisibility() != View.VISIBLE) return;
+        int shift = grid.canScrollVertically(-1) ? grid.computeVerticalScrollOffset() : 0;
+        panel.setTranslationY(-shift);
+    }
+
+    /** Bring the shelf back onto the screen before it takes focus from a scrolled grid. */
+    private void revealHikmah() {
+        if (singleRow || grid.computeVerticalScrollOffset() == 0) return;
+        grid.stopScroll();
+        parkGridAtTop();
+    }
+
     @Override
     public boolean onTileVerticalKey(int position, int keyCode) {
         int count = adapter.appCount();
         int target;
         if (singleRow) {
-            // One row: Up leaves for the top bar, Down has nowhere to go, and Left/Right walk the whole row,
-            // stopping at its two ends (the default focus search scrolls the row to the next tile).
-            if (keyCode == KeyEvent.KEYCODE_DPAD_UP) return false;
+            // One row: Up leaves for the Hikmah shelf (or the top bar), Down has nowhere to go, and Left/Right
+            // walk the whole row, stopping at its two ends (the default focus search scrolls the row to the next tile).
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                if (hikmah != null && hikmah.focus()) {
+                    revealHikmah();
+                    grid.playSoundEffect(SoundEffectConstants.NAVIGATION_UP);
+                    return true;
+                }
+                return false;
+            }
             if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) return true;
             boolean forward = rtlAppGrid ? keyCode == KeyEvent.KEYCODE_DPAD_LEFT : keyCode == KeyEvent.KEYCODE_DPAD_RIGHT;
             int last = adapter.focusablePosition(count - 1);
@@ -2351,7 +2464,14 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     rtlAppGrid, keyCode == KeyEvent.KEYCODE_DPAD_LEFT);
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
-            if (position < COLUMNS) return false;          // dock row: let focus move to the top bar
+            if (position < COLUMNS) {
+                if (hikmah != null && hikmah.focus()) {
+                    revealHikmah();
+                    grid.playSoundEffect(SoundEffectConstants.NAVIGATION_UP);
+                    return true;
+                }
+                return false;          // dock row: let focus move to the top bar
+            }
             target = position - COLUMNS;
         } else {
             int lastRowStart = ((count - 1) / COLUMNS) * COLUMNS;

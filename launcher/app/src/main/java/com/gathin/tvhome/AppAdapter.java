@@ -128,11 +128,11 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     }
 
     /**
-     * dock_row false: 4dp padding above and below, a 4dp gap and a 20dp name label, and 16dp kept under the last
+     * dock_row false: 4dp padding above and below, an 8dp gap and a 22dp name label, and 16dp kept under the last
      * row. The plain grid fits more rows on the screen, and with item_app.xml's roomier spacing the tiles came
      * out small with wide gaps between them.
      */
-    static final float COMPACT_ITEM_EXTRA_DP = 4 + 4 + 4 + 20;
+    static final float COMPACT_ITEM_EXTRA_DP = 4 + 8 + 8 + 22;
     static final float COMPACT_BOTTOM_ROOM_DP = 16;
 
     /** item_app.xml: 8dp padding above and below, a 7dp gap and the 22dp name label under the tile. */
@@ -196,6 +196,8 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     private final boolean fillDock;
     /** Dock apps found at the last reload, and the empty slots after them. */
     private int docked, emptySlots;
+    /** First bind can run before the grid has a height; one relayout pass then sizes tiles to the rows. */
+    private boolean pendingSizePass;
     /** Never shown as tiles (res/values/config.xml, hidden_apps). */
     private final Set<String> hidden;
     /** Apps pre-seeded into the App library's "added" set (config.xml library_apps); empty by default. */
@@ -424,14 +426,22 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         View name = v.findViewById(R.id.name);
         ViewGroup.MarginLayoutParams nameLp = (ViewGroup.MarginLayoutParams) name.getLayoutParams();
         nameLp.width = w;
-        nameLp.topMargin = h + Math.round((dockRow ? 7 : 4) * density);
+        nameLp.topMargin = h + Math.round((dockRow ? 7 : 8) * density);
         if (!dockRow) {
-            // Compact spacing (COMPACT_ITEM_EXTRA_DP): 4dp item padding and a 20dp name instead of 8dp and 22dp.
-            nameLp.height = Math.round(20 * density);
+            // Compact spacing (COMPACT_ITEM_EXTRA_DP): padding, a gap, and a 22dp name under the tile.
+            nameLp.height = Math.round(22 * density);
             int pad = Math.round(4 * density);
             v.setPadding(v.getPaddingLeft(), pad, v.getPaddingRight(), pad);
         }
         name.setLayoutParams(nameLp);
+        v.setMinimumHeight(itemHeightPx(h, dockRow, density));
+        if (parent.getHeight() <= 0 && !pendingSizePass) {
+            pendingSizePass = true;
+            parent.post(() -> {
+                pendingSizePass = false;
+                notifyDataSetChanged();
+            });
+        }
         // A sideways row would stretch a match_parent item across the whole screen: give it a grid column's width.
         if (singleRow) v.getLayoutParams().width = inner / dockSize;
         if (uniformTiles) {
